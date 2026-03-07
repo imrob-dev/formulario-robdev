@@ -341,15 +341,19 @@ export default function Home() {
 
       if (!response.ok) throw new Error('Erro ao gerar PDF')
 
-      const blob = await response.blob()
-      const url = window.URL.createObjectURL(blob)
-      const a = window.document.createElement('a')
+      const arrayBuffer = await response.arrayBuffer()
+      const pdfBlob = new Blob([arrayBuffer], { type: 'application/pdf' })
+      const url = URL.createObjectURL(pdfBlob)
+      const a = document.createElement('a')
+      a.style.display = 'none'
       a.href = url
-      a.download = 'questionario-reabilitacao.pdf'
-      window.document.body.appendChild(a)
+      a.download = 'formulario-clinica.pdf'
+      document.body.appendChild(a)
       a.click()
-      window.URL.revokeObjectURL(url)
-      a.remove()
+      setTimeout(() => {
+        document.body.removeChild(a)
+        URL.revokeObjectURL(url)
+      }, 100)
     } catch (error) {
       console.error('Erro:', error)
     } finally {
