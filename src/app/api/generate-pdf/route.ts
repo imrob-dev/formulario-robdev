@@ -1,7 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { execSync } from 'child_process'
-import fs from 'fs'
-import path from 'path'
+import { PDFDocument, rgb, StandardFonts } from 'pdf-lib'
 
 interface Answer {
   section: string
@@ -14,11 +12,21 @@ export async function POST(request: NextRequest) {
   try {
     const { answers } = await request.json() as { answers: Answer[] }
 
-    // Generate PDF using Python script
-    const pdfContent = generatePDFContent(answers)
+    // Strip emojis because pdf-lib default fonts (WinAnsi) don't support them
+    const stripEmojis = (str: string) => str.replace(/[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{1F700}-\u{1F77F}\u{1F780}-\u{1F7FF}\u{1F800}-\u{1F8FF}\u{1F900}-\u{1F9FF}\u{1FA00}-\u{1FA6F}\u{1FA70}-\u{1FAFF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\u{2300}-\u{23FF}\u{2B50}\u{1F004}]/gu, '').trim();
+    
+    const safeAnswers = answers.map(a => ({
+      ...a,
+      section: stripEmojis(a.section),
+      question: stripEmojis(a.question),
+      answer: stripEmojis(a.answer)
+    }))
+
+    // Generate PDF natively using pdf-lib
+    const pdfBytes = await generatePDFNative(safeAnswers)
     
     // Return PDF as response
-    return new NextResponse(pdfContent, {
+    return new NextResponse(pdfBytes, {
       status: 200,
       headers: {
         'Content-Type': 'application/pdf',
@@ -34,224 +42,95 @@ export async function POST(request: NextRequest) {
   }
 }
 
-function generatePDFContent(answers: Answer[]): Buffer {
-  // Create temporary JSON file with answers
-  const tempDir = '/tmp'
-  const timestamp = Date.now()
-  const jsonPath = path.join(tempDir, `answers_${timestamp}.json`)
-  const pdfPath = path.join(tempDir, `questionario_${timestamp}.pdf`)
+async function generatePDFNative(answers: Answer[]): Promise<Uint8Array> {
+  const pdfDoc = await PDFDocument.create()
   
-  fs.writeFileSync(jsonPath, JSON.stringify(answers, null, 2))
+  // Set Metadata
+  pdfDoc.setTitle('Questionario - Gestao da Clinica de Reabilitacao')
+  pdfDoc.setAuthor('Rob Dev')
+  pdfDoc.setCreator('Rob Silva')
+  pdfDoc.setSubject('Formulario Digital - Respostas do Questionario')
+
+  // Load Fonts
+  const fontRegular = await pdfDoc.embedFont(StandardFonts.Helvetica)
+  const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold)
   
-  // Python script to generate PDF with Rob Dev branding
-  const pythonScript = `
-# -*- coding: utf-8 -*-
-import json
-import os
-from datetime import datetime
-from reportlab.lib.pagesizes import A4
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, HRFlowable, PageBreak, Table, TableStyle
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib import colors
-from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_RIGHT
-from reportlab.lib.units import cm
-from pypdf import PdfReader, PdfWriter
+  let page = pdfDoc.addPage([595.28, 841.89]) // A4 size
+  let cursorY = page.getHeight() - 50
+  const margin = 50
 
-# Read answers
-with open('${jsonPath}', 'r', encoding='utf-8') as f:
-    answers = json.load(f)
+  const drawText = (text: string, size: number, font: any, color: any, xOffset = 0) => {
+    // Simple text wrapping mechanism
+    const words = text.split(' ')
+    let line = ''
+    let y = cursorY
 
-# Create PDF
-doc = SimpleDocTemplate(
-    '${pdfPath}',
-    pagesize=A4,
-    rightMargin=2*cm,
-    leftMargin=2*cm,
-    topMargin=2*cm,
-    bottomMargin=2.5*cm,
-    title='Questionario - Gestao da Clinica de Reabilitacao',
-    author='Rob Dev',
-    creator='Rob Silva',
-    subject='Formulario Digital - Respostas do Questionario'
-)
-
-# Styles
-styles = getSampleStyleSheet()
-
-# Brand style
-brand_style = ParagraphStyle(
-    'BrandStyle',
-    parent=styles['Normal'],
-    fontName='Helvetica-Bold',
-    fontSize=14,
-    alignment=TA_CENTER,
-    textColor=colors.HexColor('#2563EB')
-)
-
-brand_subtitle = ParagraphStyle(
-    'BrandSubtitle',
-    parent=styles['Normal'],
-    fontName='Helvetica',
-    fontSize=9,
-    alignment=TA_CENTER,
-    textColor=colors.HexColor('#6B7280')
-)
-
-title_style = ParagraphStyle(
-    'CustomTitle',
-    parent=styles['Heading1'],
-    fontName='Helvetica-Bold',
-    fontSize=20,
-    spaceAfter=4,
-    alignment=TA_CENTER,
-    textColor=colors.HexColor('#111827')
-)
-subtitle_style = ParagraphStyle(
-    'CustomSubtitle',
-    parent=styles['Normal'],
-    fontName='Helvetica',
-    fontSize=10,
-    spaceAfter=20,
-    alignment=TA_CENTER,
-    textColor=colors.HexColor('#6B7280')
-)
-section_style = ParagraphStyle(
-    'SectionStyle',
-    parent=styles['Heading2'],
-    fontName='Helvetica-Bold',
-    fontSize=12,
-    spaceBefore=16,
-    spaceAfter=10,
-    textColor=colors.HexColor('#2563EB')
-)
-question_style = ParagraphStyle(
-    'QuestionStyle',
-    parent=styles['Normal'],
-    fontName='Helvetica',
-    fontSize=9,
-    textColor=colors.HexColor('#6B7280'),
-    spaceAfter=3,
-    leftIndent=8
-)
-answer_style = ParagraphStyle(
-    'AnswerStyle',
-    parent=styles['Normal'],
-    fontName='Helvetica',
-    fontSize=10,
-    textColor=colors.HexColor('#111827'),
-    spaceAfter=14,
-    leftIndent=8
-)
-footer_style = ParagraphStyle(
-    'FooterStyle',
-    parent=styles['Normal'],
-    fontName='Helvetica',
-    fontSize=8,
-    alignment=TA_CENTER,
-    textColor=colors.HexColor('#9CA3AF')
-)
-linkedin_style = ParagraphStyle(
-    'LinkedInStyle',
-    parent=styles['Normal'],
-    fontName='Helvetica',
-    fontSize=8,
-    alignment=TA_CENTER,
-    textColor=colors.HexColor('#2563EB')
-)
-
-story = []
-
-# Brand Header
-story.append(Spacer(1, 10))
-story.append(Paragraph('ROB DEV', brand_style))
-story.append(Paragraph('Desenvolvedor', brand_subtitle))
-story.append(Spacer(1, 15))
-
-# Divider
-story.append(HRFlowable(width='100%', thickness=2, color=colors.HexColor('#2563EB'), spaceAfter=20))
-
-# Title
-story.append(Paragraph('Gestao da Clinica de Reabilitacao', title_style))
-story.append(Paragraph('Questionario Respondido', subtitle_style))
-
-# Divider
-story.append(HRFlowable(width='100%', thickness=0.5, color=colors.HexColor('#E5E7EB'), spaceAfter=15))
-
-# Group answers by section
-current_section = None
-
-for item in answers:
-    # Check if section changed
-    if item['section'] != current_section:
-        current_section = item['section']
-        story.append(Paragraph(current_section, section_style))
-    
-    # Question number from the data
-    question_num = item['number']
-    
-    # Question
-    question_text = f"<font color='#6B7280'>{question_num}.</font> {item['question']}"
-    story.append(Paragraph(question_text, question_style))
-    
-    # Answer
-    answer_text = item['answer'] if item['answer'] and item['answer'] != 'Nao informado' else '<i>Nao informado</i>'
-    story.append(Paragraph(answer_text, answer_style))
-
-story.append(Spacer(1, 15))
-story.append(HRFlowable(width='100%', thickness=0.5, color=colors.HexColor('#E5E7EB'), spaceAfter=15))
-
-# Footer
-story.append(Paragraph(f'Gerado em {datetime.now().strftime("%d/%m/%Y as %H:%M")}', footer_style))
-story.append(Spacer(1, 8))
-story.append(Paragraph('Desenvolvido por Rob Silva', footer_style))
-story.append(Paragraph('linkedin.com/in/robsilva1', linkedin_style))
-
-doc.build(story)
-
-# Add Z.ai metadata using pypdf
-reader = PdfReader('${pdfPath}')
-writer = PdfWriter()
-
-for page in reader.pages:
-    writer.add_page(page)
-
-writer.add_metadata({
-    '/Title': 'Questionario - Gestao da Clinica de Reabilitacao',
-    '/Author': 'Rob Dev',
-    '/Creator': 'Rob Silva',
-    '/Subject': 'Formulario Digital - Respostas do Questionario'
-})
-
-with open('${pdfPath}', 'wb') as output:
-    writer.write(output)
-
-print('PDF generated successfully with Rob Dev branding')
-`
-
-  // Write Python script
-  const scriptPath = path.join(tempDir, `generate_${timestamp}.py`)
-  fs.writeFileSync(scriptPath, pythonScript)
-  
-  try {
-    // Execute Python script using venv python
-    execSync(`/home/z/.venv/bin/python3 ${scriptPath}`, { timeout: 30000 })
-    
-    // Read generated PDF
-    const pdfBuffer = fs.readFileSync(pdfPath)
-    
-    // Cleanup temp files
-    fs.unlinkSync(jsonPath)
-    fs.unlinkSync(scriptPath)
-    fs.unlinkSync(pdfPath)
-    
-    return pdfBuffer
-  } catch (error) {
-    // Cleanup on error
-    try {
-      fs.unlinkSync(jsonPath)
-      fs.unlinkSync(scriptPath)
-      if (fs.existsSync(pdfPath)) fs.unlinkSync(pdfPath)
-    } catch {}
-    throw error
+    for (const word of words) {
+      const testLine = line + word + ' '
+      const textWidth = font.widthOfTextAtSize(testLine, size)
+      if (margin + xOffset + textWidth > page.getWidth() - margin) {
+        page.drawText(line, { x: margin + xOffset, y, size, font, color })
+        line = word + ' '
+        y -= size + 4
+      } else {
+        line = testLine
+      }
+    }
+    page.drawText(line, { x: margin + xOffset, y, size, font, color })
+    cursorY = y - (size + 10)
   }
+
+  const checkPageBreak = (neededSpace: number) => {
+    if (cursorY - neededSpace < margin) {
+      page = pdfDoc.addPage([595.28, 841.89])
+      cursorY = page.getHeight() - margin
+    }
+  }
+
+  // Draw Brand Header
+  drawText('ROB DEV', 16, fontBold, rgb(0.145, 0.388, 0.922))
+  cursorY += 8
+  drawText('Desenvolvedor', 10, fontRegular, rgb(0.42, 0.447, 0.502))
+  cursorY -= 15
+  checkPageBreak(30)
+
+  // Title
+  drawText('Gestao da Clinica de Reabilitacao', 20, fontBold, rgb(0.066, 0.094, 0.153))
+  cursorY += 8
+  drawText('Questionario Respondido', 12, fontRegular, rgb(0.42, 0.447, 0.502))
+  cursorY -= 20
+  checkPageBreak(20)
+
+  // Group answers by section
+  let currentSection = null
+  for (const item of answers) {
+    if (item.section !== currentSection) {
+      currentSection = item.section
+      checkPageBreak(40)
+      drawText(currentSection, 14, fontBold, rgb(0.145, 0.388, 0.922))
+      cursorY -= 5
+    }
+
+    checkPageBreak(50)
+    // Question
+    const questionText = `${item.number}. ${item.question}`
+    drawText(questionText, 10, fontBold, rgb(0.42, 0.447, 0.502), 10)
+    cursorY += 5
+    
+    // Answer
+    const answerText = item.answer && item.answer !== 'Nao informado' ? item.answer : 'Nao informado'
+    drawText(answerText, 11, fontRegular, rgb(0.066, 0.094, 0.153), 10)
+    cursorY -= 10
+  }
+
+  // Footer
+  const dateStr = new Date().toLocaleString('pt-BR')
+  checkPageBreak(60)
+  drawText(`Gerado em ${dateStr}`, 9, fontRegular, rgb(0.612, 0.639, 0.686))
+  cursorY += 5
+  drawText('Desenvolvido por Rob Silva', 9, fontRegular, rgb(0.612, 0.639, 0.686))
+  cursorY += 5
+  drawText('linkedin.com/in/robsilva1', 9, fontRegular, rgb(0.145, 0.388, 0.922))
+
+  return await pdfDoc.save()
 }
